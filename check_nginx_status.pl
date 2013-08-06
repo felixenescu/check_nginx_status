@@ -7,6 +7,9 @@
 # help : ./check_nginx_status.pl -h
 #
 # issues & updates: http://github.com/regilero/check_inginx_status
+#
+# 2013-08-07 FLX: Added ResponseTime to performance output
+#
 use strict;
 use Getopt::Long;
 use LWP::UserAgent;
@@ -36,6 +39,8 @@ my $o_warn_rps_level= -1;     # Number of Request per second that will cause a w
 my $o_crit_rps_level= -1;     # Number of request Per second that will cause an error
 my $o_warn_cps_level= -1;     # Number of Connections per second that will cause a warning
 my $o_crit_cps_level= -1;     # Number of Connections per second that will cause an error
+my $o_warn_rt_level=  -1;     # Response Time that will cause a warning
+my $o_crit_rt_level=  -1;     # Response Time that will cause an error
 my $o_timeout=        15;     # Default 15s Timeout
 my $o_warn_thresold=  undef;  # warning thresolds entry
 my $o_crit_thresold=  undef;  # critical thresolds entry
@@ -109,32 +114,33 @@ sub help {
    Number of max processes reached (since last check) that should trigger an alert
 -t, --timeout=INTEGER
    timeout in seconds (Default: $o_timeout)
--w, --warn=ACTIVE_CONN,REQ_PER_SEC,CONN_PER_SEC
+-w, --warn=ACTIVE_CONN,REQ_PER_SEC,CONN_PER_SEC,RESPONSE_TIME
    number of active connections, ReqPerSec or ConnPerSec that will cause a WARNING
    -1 for no warning
--c, --critical=ACTIVE_CONN,REQ_PER_SEC,CONN_PER_SEC
+-c, --critical=ACTIVE_CONN,REQ_PER_SEC,CONN_PER_SEC,RESPONSE_TIME
    number of active connections, ReqPerSec or ConnPerSec that will cause a CRITICAL
    -1 for no CRITICAL
 -V, --version
    prints version number
 
 Note :
-  3 items can be managed on this check, this is why -w and -c parameters are using 3 values thresolds
+  4 items can be managed on this check, this is why -w and -c parameters are using 4 values thresolds
   - ACTIVE_CONN: Number of all opened connections, including connections to backends
   - REQ_PER_SEC: Average number of request per second between this check and the previous one
   - CONN_PER_SEC: Average number of connections per second between this check and the previous one
+  - RESPONSE_TIME: Response time of the server
 
 Examples:
 
   This one will generate WARNING and CRITICIAL alerts if you reach 10 000 or 20 000 active connection; or
-  100 or 200 request per second; or 200 or 300 connections per second
-check_nginx_status.pl -H 10.0.0.10 -u /foo/nginx_status -s mydomain.example.com -t 8 -w 10000,100,200 -c 20000,200,300
+  100 or 200 request per second; or 200 or 300 connections per second; or 1 or 2 seconds response time
+check_nginx_status.pl -H 10.0.0.10 -u /foo/nginx_status -s mydomain.example.com -t 8 -w 10000,100,200,1 -c 20000,200,300,2
 
   this will generate WARNING and CRITICAL alerts only on the number of active connections (with low numbers for nginx)
-check_nginx_status.pl -H 10.0.0.10 -s mydomain.example.com -t 8 -w 10,-1,-1 -c 20,-1,-1
+check_nginx_status.pl -H 10.0.0.10 -s mydomain.example.com -t 8 -w 10,-1,-1,-1 -c 20,-1,-1,-1
 
   theses two equivalents will not generate any alert (if the nginx_status page is reachable) but could be used for graphics
-check_nginx_status.pl -H 10.0.0.10 -s mydomain.example.com -w -1,-1,-1 -c -1,-1,-1
+check_nginx_status.pl -H 10.0.0.10 -s mydomain.example.com -w -1,-1,-1,-1 -c -1,-1,-1,-1
 check_nginx_status.pl -H 10.0.0.10 -s mydomain.example.com
 
 EOT
@@ -169,10 +175,10 @@ sub check_options {
     };
 
     if (defined($o_warn_thresold)) {
-        ($o_warn_a_level,$o_warn_rps_level,$o_warn_cps_level) = split(',', $o_warn_thresold);
+        ($o_warn_a_level,$o_warn_rps_level,$o_warn_cps_level,$o_warn_rt_level) = split(',', $o_warn_thresold);
     }
     if (defined($o_crit_thresold)) {
-        ($o_crit_a_level,$o_crit_rps_level,$o_crit_cps_level) = split(',', $o_crit_thresold);
+        ($o_crit_a_level,$o_crit_rps_level,$o_crit_cps_level,$o_crit_rt_level) = split(',', $o_crit_thresold);
     }
     if (defined($o_debug)) {
         print("\nDebug thresolds: \nWarning: ($o_warn_thresold) => Active: $o_warn_a_level ReqPerSec :$o_warn_rps_level ConnPerSec: $o_warn_cps_level");
@@ -189,6 +195,10 @@ sub check_options {
     if ((defined($o_warn_cps_level) && defined($o_crit_cps_level)) &&
          (($o_warn_cps_level != -1) && ($o_crit_cps_level != -1) && ($o_warn_cps_level >= $o_crit_cps_level)) ) {
         nagios_exit($nginx,"UNKNOWN","Check warning and critical values for ConnPerSec (3rd part of thresold), warning level must be < crit level!");
+    }
+    if ((defined($o_warn_rt_level) && defined($o_crit_rt_level)) &&
+         (($o_warn_rt_level != -1) && ($o_crit_rt_level != -1) && ($o_warn_rt_level >= $o_crit_rt_level)) ) {
+        nagios_exit($nginx,"UNKNOWN","Check warning and critical values for Response Time (4th part of thresold), warning level must be < crit level!");
     }
     # Check compulsory attributes
     if (!defined($o_host)) {
@@ -396,9 +406,9 @@ if ($response->is_success) {
                  . " ReqPerSec: %.3f ConnPerSec: %.3f ReqPerConn: %.3f"
                  ,$timeelapsed,$ActiveConn,$Writing,$Reading,$Waiting,$ReqPerSec,$ConnPerSec,$ReqPerConn);
     $PerfData = sprintf ("Writing=%d;;;; Reading=%d;;;; Waiting=%d;;;; Active=%d;;;; "
-                 . "ReqPerSec=%f;;;; ConnPerSec=%f;;;; ReqPerConn=%f;;;;"
+                 . "ReqPerSec=%f;;;; ConnPerSec=%f;;;; ReqPerConn=%f;;;; ResponseTime=%f;;;;"
                  ,($Writing),($Reading),($Waiting),($ActiveConn)
-                 ,($ReqPerSec),($ConnPerSec),($ReqPerConn));
+                 ,($ReqPerSec),($ConnPerSec),($ReqPerConn),($timeelapsed));
     # first all critical exists by priority
     if (defined($o_crit_a_level) && (-1!=$o_crit_a_level) && ($ActiveConn >= $o_crit_a_level)) {
         nagios_exit($nginx,"CRITICAL", "Active Connections are critically high " . $InfoData,$PerfData);
@@ -409,6 +419,11 @@ if ($response->is_success) {
     if (defined($o_crit_cps_level) && (-1!=$o_crit_cps_level) && ($ConnPerSec >= $o_crit_cps_level)) {
         nagios_exit($nginx,"CRITICAL", "Connection per second ratio is critically high " . $InfoData,$PerfData);
     }
+	# 2013-08-07 FLX: Added warning  and critical values for ResponseTime
+    if (defined($o_crit_rt_level) && (-1!=$o_crit_rt_level) && ($timeelapsed >= $o_crit_rt_level)) {
+        nagios_exit($nginx,"CRITICAL", "Response Time is critically high " . $InfoData,$PerfData);
+    }
+
     # Then WARNING exits by priority
     if (defined($o_warn_a_level) && (-1!=$o_warn_a_level) && ($ActiveConn >= $o_warn_a_level)) {
         nagios_exit($nginx,"WARNING", "Active Connections are high " . $InfoData,$PerfData);
@@ -418,6 +433,11 @@ if ($response->is_success) {
     }
     if (defined($o_warn_cps_level) && (-1!=$o_warn_cps_level) && ($ConnPerSec >= $o_warn_cps_level)) {
         nagios_exit($nginx,"WARNING", "Connection per second ratio is high " . $InfoData,$PerfData);
+    }
+	
+	# 2013-08-07 FLX: Added warning  and critical values for ResponseTime
+    if (defined($o_warn_rt_level) && (-1!=$o_warn_rt_level) && ($timeelapsed >= $o_warn_rt_level)) {
+        nagios_exit($nginx,"WARNING", "Response Time is high " . $InfoData,$PerfData);
     }
 
     nagios_exit($nginx,"OK",$InfoData,$PerfData);
