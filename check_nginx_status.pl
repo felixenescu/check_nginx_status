@@ -8,7 +8,7 @@
 #
 # issues & updates: http://github.com/regilero/check_inginx_status
 #
-# 2013-08-07 FLX: Added ResponseTime to performance output
+# 2013-08-07 FLX: Added Response Time to performance output
 #
 use strict;
 use Getopt::Long;
